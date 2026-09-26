@@ -1,4 +1,5 @@
 """Load grouped S1 evaluation populations and their complete ground truth."""
+import os
 import polars as pl
 
 from validation import fold_expr
@@ -7,6 +8,12 @@ from validation import fold_expr
 def load_validation_base(norm, data, fold):
     s1 = (pl.read_parquet(f"{norm}/train_s1.parquet", columns=["entity_id", "country"])
             .rename({"entity_id": "a"}))
+    block_ids_path = f"{norm}/train_block_ids.parquet"
+    if os.path.exists(block_ids_path):
+        # Candidate generation may cover a sampled S1 population; score that same population.
+        block_ids = (pl.read_parquet(block_ids_path, columns=["entity_id"])
+                       .select(pl.col("entity_id").alias("a")).unique())
+        s1 = s1.join(block_ids, on="a", how="semi")
     base = s1.filter(fold_expr() == fold).select("a", "country")
 
     gt = pl.read_csv(f"{data}/train/train_ground_truth.tsv", separator="\t",
