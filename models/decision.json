@@ -1,1 +1,13 @@
-{"t": 0.5, "one_parent": true, "caps": {"S2": 5, "S3": 6}}
+{
+  "mode": "threshold",
+  "thresholds": {
+    "S2": 0.5,
+    "S3": 0.5
+  },
+  "one_parent": true,
+  "caps": {
+    "S2": 5,
+    "S3": 6
+  },
+  "min_score": 0.01
+}
