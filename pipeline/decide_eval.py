@@ -1,58 +1,87 @@
-import json, polars as pl
+import json
+import polars as pl
+
+from decide import decide
+from validation import HOLDOUT_FOLD, score_summary
+from validation_data import load_validation_base
+
 NORM = "/content/drive/MyDrive/amazon_norm"
 DATA = "/content/student_resource/student_resource/dataset"
 
-vp = pl.read_parquet(f"{NORM}/val_preds.parquet")
+vp = pl.read_parquet(f"{NORM}/val_preds.parquet").filter(pl.col("split") == "holdout")
+base, truth = load_validation_base(NORM, DATA, HOLDOUT_FOLD)
+if vp.height == 0 or base.height == 0:
+    raise ValueError("holdout split is empty; run train_model.py to create grouped predictions")
 
-# Validation S1 = train sample S1 in the 20% hash split (includes S1 with no candidates)
-ids = pl.read_parquet(f"{NORM}/train_block_ids.parquet").rename({"entity_id": "a"})
-s1c = pl.read_parquet(f"{NORM}/train_s1.parquet", columns=["entity_id", "country"]).rename({"entity_id": "a"})
-val_a = ids.filter((pl.col("a").hash(seed=42) % 5) == 0).join(s1c, on="a")
+duplicates = vp.group_by("a", "b").len().filter(pl.col("len") > 1)
+if duplicates.height:
+    raise ValueError(f"validation candidates contain {duplicates.height:,} duplicate S1/target pairs")
 
-gt = pl.read_csv(f"{DATA}/train/train_ground_truth.tsv", separator="\t", infer_schema_length=0)
-n_true = (gt.rename({"source1_entity_id": "a", "matched_entity_ids": "b"})
-            .join(val_a.select("a"), on="a", how="semi")
-            .with_columns(pl.col("b").str.split(",")).explode("b")
-            .with_columns(pl.col("b").str.strip_chars())
-            .filter(pl.col("b").is_not_null() & (pl.col("b") != ""))
-            .group_by("a").len().rename({"len": "n_true"}))
-base = val_a.join(n_true, on="a", how="left").with_columns(pl.col("n_true").fill_null(0))
-for c in ["US", "India"]:
-    b = base.filter(pl.col("country") == c)
-    print(f"{c}: {b.height:,} val S1, singletons={(b['n_true'] == 0).mean():.2%}")
+d_all = vp.select("a", "b", "p", "is_s3")
+labels = vp.select("a", "b", "y")
 
-def f05(sel):
-    agg = sel.group_by("a").agg(pl.len().alias("n_pred"), pl.col("y").sum().alias("tp"))
-    d = (base.join(agg, on="a", how="left")
-             .with_columns(pl.col("n_pred").fill_null(0), pl.col("tp").fill_null(0)))
-    prec = pl.col("tp") / pl.col("n_pred"); rec = pl.col("tp") / pl.col("n_true")
-    f = (pl.when((pl.col("n_true") == 0) & (pl.col("n_pred") == 0)).then(1.0)
-           .when((pl.col("n_true") == 0) | (pl.col("n_pred") == 0) | (pl.col("tp") == 0)).then(0.0)
-           .otherwise(1.25 * prec * rec / (0.25 * prec + rec)))
-    r = d.with_columns(f.alias("f")).group_by("country").agg(pl.col("f").mean())
-    r = dict(zip(r["country"], r["f"]))
-    return r.get("US", 0), r.get("India", 0)
 
-def cap(sel):
-    return (sel.with_columns(pl.col("p").rank("ordinal", descending=True)
-                             .over(["a", "is_s3"]).alias("rk"))
-               .filter(pl.col("rk") <= pl.when(pl.col("is_s3") == 1).then(6).otherwise(5)))
+def evaluate(selection):
+    selected = (selection.join(labels, on=["a", "b"], how="left")
+                         .with_columns(pl.col("y").fill_null(0)))
+    return score_summary(base, selected)
 
-us, ind = f05(vp.filter(pl.col("y") == 1))
-print(f"\nCEILING (perfect decisions on our candidates): US={us:.4f} India={ind:.4f}\n")
 
-vp1 = vp.filter(pl.col("p") >= pl.col("p").max().over("b"))   # one-parent rule
-best = None
-print(f"{'t':>5} | {'plain US':>9} {'plain IN':>9} | {'1-parent US':>11} {'1-parent IN':>11} {'avg':>7}")
-for t in [0.30, 0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]:
-    pu, pi = f05(cap(vp.filter(pl.col("p") >= t)))
-    ou, oi = f05(cap(vp1.filter(pl.col("p") >= t)))
-    avg = (ou + oi) / 2
-    print(f"{t:5.2f} | {pu:9.4f} {pi:9.4f} | {ou:11.4f} {oi:11.4f} {avg:7.4f}")
-    if best is None or avg > best[1]:
-        best = (t, avg, ou, oi)
+oracle = evaluate(vp.filter(pl.col("y") == 1).select("a", "b"))
+with open(f"{NORM}/decision.json", encoding="utf-8") as f:
+    decision = json.load(f)
+chosen = evaluate(decide(d_all, decision))
 
-print(f"\nBEST: t={best[0]}  US={best[2]:.4f}  India={best[3]:.4f}  avg={best[1]:.4f}")
-json.dump({"t": best[0], "one_parent": True, "caps": {"S2": 5, "S3": 6}},
-          open(f"{NORM}/decision.json", "w"))
-print("saved decision.json")
+print(f"holdout S1={base.height:,} | candidates={vp.height:,}")
+print(f"candidate-set oracle: overall={oracle['overall']:.4f} "
+      f"country={oracle['country']}")
+print(f"selected decision:    overall={chosen['overall']:.4f} "
+      f"country={chosen['country']}  config={decision}")
+
+candidate_hits = (vp.group_by("country", "is_s3")
+                    .agg(pl.col("y").sum().alias("candidate_true")))
+truth_counts = (truth.join(base.select("a", "country"), on="a", how="inner")
+                     .group_by("country", "is_s3").len()
+                     .rename({"len": "true_pairs"}))
+recall = (truth_counts.join(candidate_hits, on=["country", "is_s3"], how="left")
+                      .with_columns(pl.col("candidate_true").fill_null(0),
+                                    (pl.col("candidate_true") / pl.col("true_pairs")).alias("candidate_recall"))
+                      .sort(["country", "is_s3"]))
+print("candidate recall by country and source pair:")
+for row in recall.iter_rows(named=True):
+    source = "S1→S3" if row["is_s3"] else "S1→S2"
+    print(f"  {row['country']:8s} {source}: {row['candidate_true']:,}/"
+          f"{row['true_pairs']:,} = {row['candidate_recall']:.4f}")
+
+print("candidate-set oracle by country and source pair:")
+for country in sorted(base["country"].unique().to_list()):
+    country_base = base.filter(pl.col("country") == country).select("a", "country")
+    country_truth = truth.join(country_base.select("a"), on="a", how="semi")
+    for source_flag in (0, 1):
+        source_truth = (country_truth.filter(pl.col("is_s3") == source_flag)
+                                   .group_by("a").len().rename({"len": "n_true"}))
+        source_base = (country_base.join(source_truth, on="a", how="left")
+                                  .with_columns(pl.col("n_true").fill_null(0)))
+        source_oracle = vp.filter((pl.col("country") == country)
+                                  & (pl.col("is_s3") == source_flag)
+                                  & (pl.col("y") == 1)).select("a", "b", "y")
+        score = score_summary(source_base, source_oracle)["overall"]
+        source = "S1→S3" if source_flag else "S1→S2"
+        print(f"  {country:8s} {source}: {score:.4f}")
+
+ablations = [
+    ("without one-parent", {**decision, "one_parent": False}),
+    ("without caps", {**decision, "caps": {}}),
+    ("without parent or caps", {**decision, "one_parent": False, "caps": {}}),
+]
+ablation_path = f"{NORM}/decision_ablation.json"
+try:
+    with open(ablation_path, encoding="utf-8") as f:
+        shared_threshold = json.load(f)["best_common_threshold"]
+    ablations.insert(0, ("shared S2/S3 threshold", shared_threshold))
+except FileNotFoundError:
+    print("no shared-threshold tuning artifact; run tune_decision.py for that ablation")
+print("decoder ablations on the same holdout:")
+for name, cfg in ablations:
+    score = evaluate(decide(d_all, cfg))
+    print(f"  {name}: overall={score['overall']:.4f} country={score['country']}")

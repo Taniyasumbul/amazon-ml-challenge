@@ -1,26 +1,42 @@
 import polars as pl
 
-def prefilter(d):
-    """One-parent rule (each S2/S3 record -> its best S1) + drop negligible probabilities."""
-    return d.filter((pl.col("p") >= pl.col("p").max().over("b")) & (pl.col("p") >= 0.01))
+
+def _thresholds(cfg):
+    if "thresholds" in cfg:
+        values = cfg["thresholds"]
+        return float(values["S2"]), float(values["S3"])
+    if "t2" in cfg or "t3" in cfg:
+        return float(cfg.get("t2", cfg.get("t3"))), float(cfg.get("t3", cfg.get("t2")))
+    if "t" in cfg:
+        return float(cfg["t"]), float(cfg["t"])
+    raise ValueError("decision config must define thresholds for S2 and S3")
+
 
 def decide(d, cfg):
-    d = prefilter(d)
-    d = (d.with_columns(pl.col("p").rank("ordinal", descending=True).over(["a", "is_s3"]).alias("rk_s"))
-          .filter(pl.col("rk_s") <= pl.when(pl.col("is_s3") == 1).then(6).otherwise(5)))
-    if cfg["mode"] == "threshold":
-        thr = pl.when(pl.col("is_s3") == 1).then(cfg["t3"]).otherwise(cfg["t2"])
-        return d.filter(pl.col("p") >= thr).select("a", "b")
-    # expected-F0.5 rule, chosen per S1
-    pc = pl.col("p").clip(1e-6, 1 - 1e-6)
-    d = d.with_columns(pl.col("p").sum().over("a").alias("T"),
-                       (1 - pc).log().sum().over("a").exp().alias("F0"))
-    d = d.filter(pl.col("p") >= cfg["t_low"])
-    d = d.with_columns(pl.col("p").rank("ordinal", descending=True).over("a").alias("m"))
-    d = d.sort(["a", "m"]).with_columns(pl.col("p").cum_sum().over("a").alias("E"))
-    d = d.with_columns((1.25 * pl.col("E") / (pl.col("m") + 0.25 * pl.col("T"))).alias("F"))
-    d = d.with_columns(pl.col("F").max().over("a").alias("Fmax"))
-    d = d.with_columns(pl.when(pl.col("F") == pl.col("Fmax")).then(pl.col("m"))
-                         .otherwise(None).min().over("a").alias("mstar"))
-    return (d.filter((pl.col("m") <= pl.col("mstar")) & (pl.col("Fmax") > pl.col("F0") * cfg["k0"]))
-             .select("a", "b"))
+    """Apply the configured threshold, parent filter, and per-source caps."""
+    if cfg.get("mode", "threshold") != "threshold":
+        raise ValueError("only threshold decision configs are supported")
+
+    t2, t3 = _thresholds(cfg)
+    min_score = float(cfg.get("min_score", 0.01))
+    d = d.with_columns(
+        pl.when(pl.col("is_s3") == 1).then(t3).otherwise(t2).alias("_threshold"))
+    d = d.filter((pl.col("p") >= min_score) & (pl.col("p") >= pl.col("_threshold")))
+
+    if cfg.get("one_parent", True):
+        # Sort before deduplication so exact score ties resolve consistently.
+        d = (d.sort(["b", "p", "a"], descending=[False, True, False])
+               .unique(subset="b", keep="first", maintain_order=True))
+
+    caps = cfg.get("caps", {"S2": 5, "S3": 6})
+    if caps:
+        k2, k3 = caps.get("S2"), caps.get("S3")
+        d = (d.sort(["a", "is_s3", "p", "b"],
+                    descending=[False, False, True, False])
+               .with_columns(pl.col("p").rank("ordinal", descending=True)
+                             .over(["a", "is_s3"]).alias("_rank"))
+               .filter(pl.when(pl.col("is_s3") == 1)
+                       .then(pl.col("_rank") <= k3 if k3 is not None else pl.lit(True))
+                       .otherwise(pl.col("_rank") <= k2 if k2 is not None else pl.lit(True))))
+
+    return d.select("a", "b")
