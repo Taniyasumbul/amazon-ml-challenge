@@ -1,6 +1,5 @@
-import os, glob, time, gc, sys
+import os, glob, time, gc
 import numpy as np, polars as pl, lightgbm as lgb
-sys.path.insert(0, "/content/drive/MyDrive/amazon_norm/code")
 from features import FEATS
 from validation import (EARLY_STOP_FOLD, HOLDOUT_FOLD, TUNE_FOLD,
                         fold_expr)

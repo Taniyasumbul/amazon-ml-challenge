@@ -1,9 +1,8 @@
-import sys, time, gc
+import time, gc
 import numpy as np, polars as pl, lightgbm as lgb
 from rapidfuzz import fuzz
 from rapidfuzz.distance import JaroWinkler
 from rapidfuzz.process import cpdist
-sys.path.insert(0, "/content/drive/MyDrive/amazon_norm/code")
 from features import prep, REC_COLS
 from decide import decide
 from validation import TUNE_FOLD, score_summary

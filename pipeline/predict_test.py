@@ -1,6 +1,5 @@
 import sys, os, glob, time, gc, psutil
 import numpy as np, polars as pl, lightgbm as lgb
-sys.path.insert(0, "/content/drive/MyDrive/amazon_norm/code")
 from features import prep, pair_features, REC_COLS, FEATS
 
 NORM = "/content/drive/MyDrive/amazon_norm"

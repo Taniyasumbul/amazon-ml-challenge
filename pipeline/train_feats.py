@@ -1,6 +1,5 @@
 import sys, os, glob, time, gc, psutil
 import polars as pl
-sys.path.insert(0, "/content/drive/MyDrive/amazon_norm/code")
 from features import prep, pair_features, REC_COLS
 
 NORM = "/content/drive/MyDrive/amazon_norm"
