@@ -20,7 +20,9 @@ count. Do not use the refit model to score the saved holdout predictions.
 Run `pipeline/tune_decision.py` on fold 1, then `pipeline/decide_eval.py` on
 fold 2. Both use the official per-S1 F0.5 mean over the full evaluation
 population, including singleton S1s and S1s with no candidates. Country scores
-are diagnostic only. `pipeline/val_preds.py` summarizes the saved predictions;
+are diagnostic only. Candidate recall/oracle and decoder ablations are reported
+on the tuning fold; `decide_eval.py` reports only the selected config on the
+untouched holdout. `pipeline/val_preds.py` summarizes the saved predictions;
 it does not regenerate them.
 
 The tuner writes one decision config consumed by `pipeline/decide.py` for both
