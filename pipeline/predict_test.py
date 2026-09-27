@@ -31,6 +31,7 @@ log("  records prepared, model loaded")
 for f in todo:
     out = f"{OUT}/{os.path.basename(f)}"
     p = pl.read_parquet(f)
+    p = p.join(pl.read_parquet(f"{NORM}/comp/{os.path.basename(f)}"), on=["a", "b"], how="left")
     if p.height == 0:
         pl.DataFrame(schema={"a": pl.Utf8, "b": pl.Utf8, "p": pl.Float32,
                              "is_s3": pl.Int8}).write_parquet(out)

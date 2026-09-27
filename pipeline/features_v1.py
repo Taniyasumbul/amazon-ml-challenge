@@ -1,10 +1,7 @@
-import sys
 import numpy as np, polars as pl
 from rapidfuzz import fuzz
 from rapidfuzz.distance import JaroWinkler
 from rapidfuzz.process import cpdist
-sys.path.insert(0, "/content/business_entity_resolution/src")
-from keys import skeleton
 
 REC_COLS = ["entity_id", "name_norm", "name_core", "name_alias",
             "addr_norm", "addr_toks", "addr_nums"]
@@ -34,28 +31,20 @@ def prep(df, sfx):
             pl.element().str.len_chars().is_between(5, 6))).alias("zp"),
         pl.col("ns").str.split("").list.sort().list.join("").alias("ag"),
         pl.col("nc").str.len_chars().alias("nl"),
-        pl.col("ns").map_elements(skeleton, return_dtype=pl.Utf8).fill_null("").alias("sk"),
-        pl.when(pl.col("nc") == "").then(0).otherwise(pl.len().over("nc")).alias("nfreq"),
     )
-    tok = out.select("id", "nt").explode("nt").drop_nulls()
-    tdf = tok.group_by("nt").len().rename({"len": "tdf"})
-    mt = tok.join(tdf, on="nt").group_by("id").agg(pl.col("tdf").min().alias("tdf_min"))
-    out = out.join(mt, on="id", how="left").with_columns(pl.col("tdf_min").fill_null(0))
     return out.rename({c: f"{c}_{sfx}" for c in out.columns})
 
 STR = [("n_ratio", "nc", fuzz.ratio), ("n_tsort", "nc", fuzz.token_sort_ratio),
        ("n_tset", "nc", fuzz.token_set_ratio), ("n_partial", "nc", fuzz.partial_ratio),
        ("n_jw", "nc", JaroWinkler.normalized_similarity), ("n_nosp", "ns", fuzz.ratio),
        ("nn_ratio", "nn", fuzz.ratio), ("a_ratio", "ad", fuzz.ratio),
-       ("a_tset", "ad", fuzz.token_set_ratio), ("n_skel", "sk", fuzz.ratio)]
+       ("a_tset", "ad", fuzz.token_set_ratio)]
 
 BLOCK = [f"f{i}" for i in range(9)] + ["nfam", "bscore", "b_rel", "rscore", "rrank"]
-NEW = ["nfreq_a", "nfreq_b", "tdf_min_a", "tdf_min_b", "ntok_a", "ntok_b", "a_empty_a", "a_empty_b"]
-COMP = ["c_n", "c_rank", "c_margin_r", "c_margin_b", "c_same"]
 FEATS = ([n for n, _, _ in STR] + ["alias_x", "n_jac", "n_contain", "a_jac", "num_jac",
          "num_shared", "tail_shared", "zip_shared", "n_eq", "nn_eq", "ag_eq", "n_lenr",
          "n0_eq", "n0_suffix", "a_empty_any", "a_empty_both", "n_empty_any",
-         "n_cand", "r_gap"] + BLOCK + ["is_s3"] + NEW + COMP)
+         "n_cand", "r_gap"] + BLOCK + ["is_s3"])
 
 def _cp(x, y, sc):
     return cpdist(x, y, scorer=sc, workers=-1, dtype=np.float32)
@@ -78,6 +67,7 @@ def pair_features(p, A, B, is_s3):
     al2 = _cp(d["al_a"].fill_null("").to_list(), d["nc_b"].fill_null("").to_list(), fuzz.token_set_ratio)
     cols["alias_x"] = np.maximum(al1, al2)
     d = d.with_columns([pl.Series(k, v) for k, v in cols.items()])
+
     d = d.with_columns(
         _inter("nt").alias("_nti"), pl.col("nt_a").list.len().alias("_nta"),
         pl.col("nt_b").list.len().alias("_ntb"),
@@ -106,10 +96,6 @@ def pair_features(p, A, B, is_s3):
         pl.len().over("a").alias("n_cand"),
         (pl.col("rscore") - pl.col("rscore").max().over("a")).alias("r_gap"),
         pl.lit(1.0 if is_s3 else 0.0).alias("is_s3"),
-        pl.col("nfreq_a").log1p(), pl.col("nfreq_b").log1p(),
-        pl.col("tdf_min_a").log1p(), pl.col("tdf_min_b").log1p(),
-        pl.col("_nta").alias("ntok_a"), pl.col("_ntb").alias("ntok_b"),
-        (pl.col("ad_a") == "").alias("a_empty_a"), (pl.col("ad_b") == "").alias("a_empty_b"),
     )
     return d.select(["a", "b"] + [pl.col(f).cast(pl.Float32).fill_null(0).fill_nan(0)
                                   for f in FEATS])

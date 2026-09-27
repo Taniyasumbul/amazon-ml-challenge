@@ -25,14 +25,19 @@ meta = pl.concat(meta_l); del meta_l; gc.collect()
 log(f"loaded: train={len(ytr):,} (pos {ytr.mean():.2%})  val={len(yva):,} (pos {yva.mean():.2%})")
 
 # ---- Train ----
+def checkpoint(env):
+    if (env.iteration + 1) % 100 == 0:
+        env.model.save_model(f"{NORM}/match_model_lgb.txt")
+        print(f"  checkpoint saved at round {env.iteration+1}", flush=True)
+
 dtr = lgb.Dataset(Xtr, ytr, feature_name=FEATS, free_raw_data=True)
 dva = lgb.Dataset(Xva, yva, reference=dtr)
 dtr.construct(); del Xtr; gc.collect()
-params = dict(objective="binary", learning_rate=0.08, num_leaves=127, min_data_in_leaf=200,
+params = dict(objective="binary", learning_rate=0.1, num_leaves=127, min_data_in_leaf=200,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
               metric="average_precision", verbose=-1, num_threads=0)
-m = lgb.train(params, dtr, num_boost_round=1000, valid_sets=[dva], valid_names=["val"],
-              callbacks=[lgb.early_stopping(50), lgb.log_evaluation(50)])
+m = lgb.train(params, dtr, num_boost_round=500, valid_sets=[dva], valid_names=["val"],
+              callbacks=[lgb.early_stopping(50), lgb.log_evaluation(50), checkpoint])
 m.save_model(f"{NORM}/match_model_lgb.txt")
 log(f"model saved, best iteration = {m.best_iteration}")
 

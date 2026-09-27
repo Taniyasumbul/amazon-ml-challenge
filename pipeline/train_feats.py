@@ -38,6 +38,7 @@ del gt; gc.collect()
 
 for f in todo:
     p = pl.read_parquet(f)
+    p = p.join(pl.read_parquet(f"{NORM}/comp/{os.path.basename(f)}"), on=["a", "b"], how="left")
     d = pair_features(p, A, B, src == "3")
     d = d.join(truth, on=["a", "b"], how="left").with_columns(pl.col("y").fill_null(0))
     d.write_parquet(f"{OUTF}/{os.path.basename(f)}")
